@@ -7,7 +7,7 @@ In the viewpoint of DU:
 * check the DU Tx timing
 
 # Usage
-It is tested in Wireshark v3.6 under Windows
+It is tested in Wireshark v4.0.2 under Windows
 * copy the lua files into the folder of Personal Lua Plugins
 * reload the plugin via menu: Analyzer--Reload Lua Plugins
 * access the plugin via menu: Tools--ORAN

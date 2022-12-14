@@ -80,8 +80,7 @@ local function get_time_diff(isAdv)
 end
 
 local function compose_ru_port()
-    -- the cc_id and ru_port is fixed to 4 bits
-    return get_cc_id().value * 16 + get_ru_port().value
+    return get_ru_port().value
 end
 
 -- 
