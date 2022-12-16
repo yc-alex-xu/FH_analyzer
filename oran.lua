@@ -5,12 +5,11 @@
 local mu = 1
 local eAxC_offset_prach = 32
 local eAxC_offset_srs = 64
-local MAX_ANT_NORMAL_UL = 3
 
 -- window defined per symbol; in usec; [min,max]
 local str_Tx_type = {"UL-C", "DL-C", "DL-U"}
-local Tx_wnd = {{125, 336}, {259, 669}, {172, 235}} -- {UL_CP, DL_CP,DL_UP}
--- local Tx_wnd = {{205, 642}, {277, 714}, {0, 0}} -- {UL_CP, DL_CP,DL_UP}
+-- Table 6. Front Haul Interface Latency (numerology 1 - Sub6) from FlexRAN 22.11
+local Tx_wnd = {{285, 429}, {285, 429}, {71, 428}} -- {UL_CP, DL_CP,DL_UP}
 local Rx_wnd_up = {{0, 350}, {0, 1500}, {0, 1050}} -- {normal, prach,srs}
 
 -- fields
@@ -26,7 +25,6 @@ local get_data_direction = Field.new("oran_fh_cus.data_direction")
 local get_numberOfSections = Field.new("oran_fh_cus.numberOfSections")
 local get_numSymbol = Field.new("oran_fh_cus.numSymbol")
 
--- common functions
 local function check_Tx_timing(idx, t)
     if t > Tx_wnd[idx][2] then
         return "EARLY"
@@ -46,7 +44,6 @@ local function check_Rx_timing(ru_port, t)
             index = 2
         end
     end
-
     if t < Rx_wnd_up[index][1] then
         return "EARLY"
     end
@@ -79,31 +76,17 @@ local function get_time_diff(isAdv)
     end
 end
 
-local function compose_ru_port()
-    return get_ru_port().value
-end
-
--- 
--- Taps
---
 local function menuable_TX_timing()
     local tw = TextWindow.new("DU Tx timing check")
-    local text = "packet\tANT\tDIR\tstatus\tahead\n"
+    local text = "packet\tcell\tANT\tDIR\tstatus\tahead(μs)\n"
 
-    -- ecpri.type ONLY
     local tap = Listener.new("frame", "eth.type == 0xaefe");
 
     local function remove()
-        -- this way we remove the listener that otherwise will remain running indefinitely
         tap:remove();
     end
 
-    -- we tell the window to call the remove() function when closed
-    tw:set_atclose(remove)
-
-    -- this function will be called once for each packet
     function tap.packet(pinfo, tvb)
-        local ru_port = compose_ru_port()
         local cus_type = get_cus_type().value
         local data_direction = get_data_direction().value
         if cus_type == 0x02 or (cus_type == 0 and data_direction == 1) then
@@ -114,7 +97,7 @@ local function menuable_TX_timing()
             end
             local result = check_Tx_timing(idx, time_in_advance)
             if result then
-                text = text .. pinfo.number .. "\t" .. ru_port .. "\t" .. str_Tx_type[idx] .. "\t" .. result .. "\t" .. time_in_advance .. "\n"
+                text = text .. pinfo.number .. "\t" .. get_cc_id().value .. "\t" .. get_ru_port().value .. "\t" .. str_Tx_type[idx] .. "\t" .. result .. "\t" .. time_in_advance .. "\n"
             end
         end
     end
@@ -125,7 +108,7 @@ end
 
 local function menuable_UL_timing()
     local tw = TextWindow.new("DU Rx timing check")
-    local text = "packet\tANT\tstatus\tlag\n"
+    local text = "packet\tcell\tANT\tstatus\tlag(μs)\n"
     local tap = Listener.new("frame", "eth.type == 0xaefe");
 
     local function remove()
@@ -135,12 +118,12 @@ local function menuable_UL_timing()
     tw:set_atclose(remove)
 
     function tap.packet(pinfo, tvb)
-        local ru_port = compose_ru_port()
+        local ru_port = get_ru_port().value
         if get_cus_type().value == 0 and get_data_direction().value == 0 then
             local time_lag = get_time_diff(false)
             local result = check_Rx_timing(ru_port, time_lag)
             if result then
-                text = text .. pinfo.number .. "\t" .. ru_port .. "\t" .. result .. "\t" .. time_lag .. "\n"
+                text = text .. pinfo.number .. "\t" .. get_cc_id().value .. "\t" .. ru_port .. "\t" .. result .. "\t" .. time_lag .. "\n"
             end
         end
     end
@@ -154,8 +137,8 @@ end
 -- don't support  multi-section in u-plane
 local function menuable_UL_missing()
     local tw = TextWindow.new("UL u-plane missing check")
-    local text = "packet\tANT\tmissing@Symbols\n"
-    local last_slot, last_ru_port = -1, -1
+    local text = "packet\tcell\tANT\tmissing@Symbols\n"
+    local last_slot, last_idx = -1, -1
     local NUM_SLOT = 10 * 2 ^ mu -- number of slot in a frame
     local t_cplane = {}
 
@@ -167,8 +150,19 @@ local function menuable_UL_missing()
 
     tw:set_atclose(remove)
 
-    function is_nSlot_before(i, slot, n)
-        result = false
+    local function get_idx()
+        return get_cc_id().value * 256 + get_ru_port().value
+    end
+
+    local function get_cell_from_idx(idx)
+        return math.floor(idx / 256)
+    end
+
+    local function get_port_from_idx(idx)
+        return idx % 256
+    end
+
+    local function is_n_slots_before(i, slot, n)
         if slot - n >= 0 then
             return i <= slot and i >= slot - n
         else
@@ -176,40 +170,40 @@ local function menuable_UL_missing()
         end
     end
 
-    function check_missing_per_ant(slot, ru_port, packet_no)
-        local str_missing = t_cplane[slot][ru_port][14] .. "\t" .. ru_port .. "\t"
+    local function check_missing_per_eAxC(slot, idx, packet_no)
+        local str_missing = ''
         local missing = false
         for i = 0, 13 do -- chehck missing,per symbol
-            if t_cplane[slot][ru_port][i] > 0 then
+            if t_cplane[slot][idx][i] > 0 then
                 str_missing = str_missing .. i .. ","
                 missing = true
             end
         end
         if missing then
-            text = text .. str_missing .. "\n"
+            text = text .. t_cplane[slot][idx][14] .. "\t" .. get_cell_from_idx(idx) .. "\t" .. get_port_from_idx(idx) .. "\t" .. str_missing .. "\n"
         end
-        t_cplane[slot][ru_port] = nil
+        t_cplane[slot][idx] = nil
 
     end
 
-    function check_missing(slot, packet_no)
+    local function check_missing(slot, packet_no)
         for i in pairs(t_cplane) do
-            if t_cplane[i] and (not is_nSlot_before(i, slot, 2)) then
-                for ant = 0, MAX_ANT_NORMAL_UL do
-                    if t_cplane[i][ant] then
-                        check_missing_per_ant(i, ant, packet_no)
+            if t_cplane[i] and (not is_n_slots_before(i, slot, 2)) then
+                for idx in pairs(t_cplane[i]) do
+                    if get_port_from_idx(idx) < eAxC_offset_prach then
+                        check_missing_per_eAxC(i, idx, packet_no)
                     end
                 end
-            end -- normal IQ
+            end
 
-            if t_cplane[i] and (not is_nSlot_before(i, slot, 5)) then
-                for ant in pairs(t_cplane[i]) do
-                    if ant >= eAxC_offset_prach then
-                        check_missing_per_ant(i, ant, packet_no)
+            if t_cplane[i] and (not is_n_slots_before(i, slot, 5)) then
+                for idx in pairs(t_cplane[i]) do
+                    if get_port_from_idx(idx) >= eAxC_offset_prach then
+                        check_missing_per_eAxC(i, idx, packet_no)
                     end
                 end
-            end -- prach/srs
-        end -- loop
+            end
+        end
     end
 
     function tap.packet(pinfo, tvb)
@@ -217,7 +211,7 @@ local function menuable_UL_missing()
             return -- UL only
         end
 
-        local ru_port = compose_ru_port()
+        local idx = get_idx()
         local cus_type = get_cus_type().value
         local slot = (get_subframe_id().value * 2 ^ mu + get_slotId().value)
         local startSymbolId = get_startSymbolId().value
@@ -226,10 +220,10 @@ local function menuable_UL_missing()
             if slot ~= last_slot then
                 check_missing(slot, pinfo.number)
             end
-            if slot ~= last_slot or ru_port ~= last_ru_port then
+            if slot ~= last_slot or idx ~= last_idx then
                 t_cplane[slot] = t_cplane[slot] or {}
-                if t_cplane[slot][ru_port] == nil then
-                    t_cplane[slot][ru_port] = {
+                if t_cplane[slot][idx] == nil then
+                    t_cplane[slot][idx] = {
                         [0] = 0,
                         0,
                         0,
@@ -247,21 +241,21 @@ local function menuable_UL_missing()
                         pinfo.number
                     }
                 end
-                last_slot, last_ru_port = slot, ru_port
+                last_slot, last_idx = slot, idx
             end
 
             local numberOfSections = get_numberOfSections().value -- don't support symInc = 1
             local numSymbol = get_numSymbol().value
             for i = startSymbolId, startSymbolId + numSymbol - 1 do
-                if t_cplane[slot][ru_port] then
-                    t_cplane[slot][ru_port][i] = t_cplane[slot][ru_port][i] + numberOfSections
+                if t_cplane[slot][idx] then
+                    t_cplane[slot][idx][i] = t_cplane[slot][idx][i] + numberOfSections
                 end
             end
         end -- c-plane
 
         -- UL u-plane
-        if cus_type == 0 and t_cplane[slot] and t_cplane[slot][ru_port] then
-            t_cplane[slot][ru_port][startSymbolId] = t_cplane[slot][ru_port][startSymbolId] - 1 -- only 1 section allowed
+        if cus_type == 0 and t_cplane[slot] and t_cplane[slot][idx] then
+            t_cplane[slot][idx][startSymbolId] = t_cplane[slot][idx][startSymbolId] - 1 -- only 1 section allowed
         end
     end
 

@@ -16,3 +16,5 @@ It is tested in Wireshark v4.0.2 under Windows
 According to https://wiki.wireshark.org/Lua
 
 The code written in Lua that uses bindings to Wireshark must be distributed under the GPL terms. 
+# release
+v1.2 support multi-cell
