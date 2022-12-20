@@ -18,3 +18,7 @@ According to https://wiki.wireshark.org/Lua
 The code written in Lua that uses bindings to Wireshark must be distributed under the GPL terms. 
 # release
 v1.2 support multi-cell
+
+# dev
+Lua 5.2.4
+vscode + extension(Github: https://github.com/Tencent/LuaHelper)
