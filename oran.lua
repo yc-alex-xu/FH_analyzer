@@ -10,7 +10,7 @@ local eAxC_offset_srs = 64
 local str_Tx_type = {"UL-C", "DL-C", "DL-U"}
 -- Table 6. Front Haul Interface Latency (numerology 1 - Sub6) from FlexRAN 22.11
 local Tx_wnd = {{285, 429}, {285, 429}, {71, 428}} -- {UL_CP, DL_CP,DL_UP}
-local Rx_wnd_up = {{0, 350}, {0, 1500}, {0, 1050}} -- {normal, prach,srs}
+local Rx_wnd_up = {{0, 350}, {0, 1050}, {0, 1050}} -- {normal, prach,srs}
 
 -- fields
 local get_cus_type = Field.new("ecpri.type")
@@ -53,13 +53,18 @@ local function check_Rx_timing(ru_port, t)
     return nil
 end
 
-local function get_time_diff(isAdv)
+local function get_time_diff(isAdv, isSlotLevel)
     local epoch = tonumber(tostring(get_time_epoch()))
     local gps_epoch = epoch - 315964782
     local sfn = math.floor(gps_epoch * 100) % 256
     local offset = math.floor(gps_epoch * 10 ^ 6) % 10000 -- offset in usec inside the frame,
-    local baseline = get_subframe_id().value * 1000 + get_slotId().value * (1000 / 2 ^ mu) + get_startSymbolId().value * (1000 / (2 ^ mu * 14))
-    baseline = math.floor(baseline)
+    local baseline = get_subframe_id().value * 1000
+    if isSlotLevel then
+        baseline = baseline + (get_slotId().value + 1) * (1000 / 2 ^ mu)
+    else
+        baseline = baseline + get_slotId().value * (1000 / 2 ^ mu) + get_startSymbolId().value * (1000 / (2 ^ mu * 14))
+        baseline = math.floor(baseline)
+    end
     local frameId = get_frameId().value
     if isAdv then
         local time_in_advance = baseline - offset
@@ -90,7 +95,7 @@ local function menuable_TX_timing()
         local cus_type = get_cus_type().value
         local data_direction = get_data_direction().value
         if cus_type == 0x02 or (cus_type == 0 and data_direction == 1) then
-            local time_in_advance = get_time_diff(true)
+            local time_in_advance = get_time_diff(true, false)
             local idx = 3
             if cus_type == 0x02 then
                 idx = data_direction + 1
@@ -108,7 +113,7 @@ end
 
 local function menuable_UL_timing()
     local tw = TextWindow.new("DU Rx timing check")
-    local text = "packet\tcell\tANT\tstatus\tlag(μs)\n"
+    local text = "packet\tcell\tANT\tSYM\tstatus\tlag(μs)\n"
     local tap = Listener.new("frame", "eth.type == 0xaefe");
 
     local function remove()
@@ -120,10 +125,36 @@ local function menuable_UL_timing()
     function tap.packet(pinfo, tvb)
         local ru_port = get_ru_port().value
         if get_cus_type().value == 0 and get_data_direction().value == 0 then
-            local time_lag = get_time_diff(false)
+            local time_lag = get_time_diff(false, false)
             local result = check_Rx_timing(ru_port, time_lag)
             if result then
-                text = text .. pinfo.number .. "\t" .. get_cc_id().value .. "\t" .. ru_port .. "\t" .. result .. "\t" .. time_lag .. "\n"
+                text = text .. pinfo.number .. "\t" .. get_cc_id().value .. "\t" .. ru_port .. "\t" .. get_startSymbolId().value .. "\t" .. result .. "\t" .. time_lag .. "\n"
+            end
+        end
+    end
+
+    retap_packets()
+    tw:set(text)
+end
+
+local function menuable_UL_timing_slot_level()
+    local tw = TextWindow.new("DU Rx timing check")
+    local text = "packet\tcell\tANT\tSYM\tstatus\tlag(μs)\n"
+    local tap = Listener.new("frame", "eth.type == 0xaefe");
+
+    local function remove()
+        tap:remove();
+    end
+
+    tw:set_atclose(remove)
+
+    function tap.packet(pinfo, tvb)
+        local ru_port = get_ru_port().value
+        if get_cus_type().value == 0 and get_data_direction().value == 0 then
+            local time_lag = get_time_diff(false, true)
+            local result = check_Rx_timing(ru_port, time_lag)
+            if result == "LATE" then
+                text = text .. pinfo.number .. "\t" .. get_cc_id().value .. "\t" .. ru_port .. "\t" .. get_startSymbolId().value .. "\t" .. result .. "\t" .. time_lag .. "\n"
             end
         end
     end
@@ -272,5 +303,6 @@ end
 
 -- register menu
 register_menu("ORAN/DU Tx timing", menuable_TX_timing, MENU_TOOLS_UNSORTED)
+register_menu("ORAN/UL timing(slot level)", menuable_UL_timing_slot_level, MENU_TOOLS_UNSORTED)
 register_menu("ORAN/UL timing", menuable_UL_timing, MENU_TOOLS_UNSORTED)
 register_menu("ORAN/UL missing ", menuable_UL_missing, MENU_TOOLS_UNSORTED)
